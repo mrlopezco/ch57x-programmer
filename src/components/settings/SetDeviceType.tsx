@@ -9,6 +9,10 @@ export type SetDeviceTypeProps = {
   keyboardDeviceType: KeyboardDeviceType;
   userKeyboardDeviceType: KeyboardDeviceType | undefined;
   onChange: (update: KeyboardDeviceType) => void;
+  /** Upper bound for buttons; defaults to hardware-reported max when available. */
+  maxButtons?: number;
+  maxEncoders?: number;
+  maxLayers?: number;
 };
 
 const input = cva([
@@ -20,83 +24,68 @@ export function SetDeviceType({
   keyboardDeviceType,
   userKeyboardDeviceType,
   onChange,
+  maxButtons,
+  maxEncoders,
+  maxLayers,
 }: SetDeviceTypeProps) {
   const buttons = userKeyboardDeviceType?.buttons ?? keyboardDeviceType.buttons;
   const encoders =
     userKeyboardDeviceType?.encoders ?? keyboardDeviceType.encoders;
   const layers = userKeyboardDeviceType?.layers ?? keyboardDeviceType.layers;
 
+  const buttonsMax = Math.max(
+    maxButtons ?? keyboardDeviceType.buttons,
+    buttons,
+    1
+  );
+  const encodersMax = Math.max(
+    maxEncoders ?? keyboardDeviceType.encoders,
+    encoders,
+    0
+  );
+  const layersMax = Math.max(maxLayers ?? keyboardDeviceType.layers, layers, 1);
+
   const onChangeButtons = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
-      const buttons = event.target.valueAsNumber;
-      if (
-        Number.isInteger(buttons) &&
-        buttons > 0 &&
-        buttons <= keyboardDeviceType.buttons
-      ) {
+      const next = event.target.valueAsNumber;
+      if (Number.isInteger(next) && next > 0 && next <= buttonsMax) {
         onChange({
           family: keyboardDeviceType.family,
-          buttons,
+          buttons: next,
           encoders,
           layers,
         });
       }
     },
-    [
-      encoders,
-      layers,
-      onChange,
-      keyboardDeviceType.buttons,
-      keyboardDeviceType.family,
-    ]
+    [encoders, layers, onChange, buttonsMax, keyboardDeviceType.family]
   );
   const onChangeEncoders = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
-      const encoders = event.target.valueAsNumber;
-      if (
-        Number.isInteger(encoders) &&
-        encoders > 0 &&
-        encoders <= keyboardDeviceType.encoders
-      ) {
+      const next = event.target.valueAsNumber;
+      if (Number.isInteger(next) && next >= 0 && next <= encodersMax) {
         onChange({
           family: keyboardDeviceType.family,
           buttons,
-          encoders,
+          encoders: next,
           layers,
         });
       }
     },
-    [
-      buttons,
-      layers,
-      onChange,
-      keyboardDeviceType.encoders,
-      keyboardDeviceType.family,
-    ]
+    [buttons, layers, onChange, encodersMax, keyboardDeviceType.family]
   );
   const onChangeLayers = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
-      const layers = event.target.valueAsNumber;
-      if (
-        Number.isInteger(layers) &&
-        layers > 0 &&
-        layers <= keyboardDeviceType.layers
-      ) {
+      const next = event.target.valueAsNumber;
+      if (Number.isInteger(next) && next > 0 && next <= layersMax) {
         onChange({
           family: keyboardDeviceType.family,
           buttons,
           encoders,
-          layers,
+          layers: next,
         });
       }
     },
-    [
-      buttons,
-      encoders,
-      onChange,
-      keyboardDeviceType.layers,
-      keyboardDeviceType.family,
-    ]
+    [buttons, encoders, onChange, layersMax, keyboardDeviceType.family]
   );
 
   return (
@@ -106,17 +95,17 @@ export function SetDeviceType({
         className={input()}
         value={buttons}
         type="number"
-        min="0"
-        max={keyboardDeviceType.buttons}
+        min="1"
+        max={buttonsMax}
         onChange={onChangeButtons}
       />
-      <Text strong>Encoders:</Text>
+      <Text strong>Encoders (knobs):</Text>
       <Input
         className={input()}
         value={encoders}
         type="number"
         min="0"
-        max={keyboardDeviceType.encoders}
+        max={encodersMax}
         onChange={onChangeEncoders}
       />
       <Text strong>Layers:</Text>
@@ -124,8 +113,8 @@ export function SetDeviceType({
         className={input()}
         value={layers}
         type="number"
-        min="0"
-        max={keyboardDeviceType.layers}
+        min="1"
+        max={layersMax}
         onChange={onChangeLayers}
       />
     </>

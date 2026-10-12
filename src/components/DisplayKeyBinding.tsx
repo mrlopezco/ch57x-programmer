@@ -35,10 +35,10 @@ import {
   KeyChord,
   Macro,
   modifiersToCanonical,
-  modifiersToString,
   MouseAction,
   MouseModifier,
 } from "@model/keyboard";
+import { modifierLabel } from "@model/modifier_labels";
 import { useKeyboardLayout } from "@model/useKeyboardLayout";
 import { Text } from "@ux/Typography";
 
@@ -86,24 +86,27 @@ function DisplayKeyboardMacro({ keyChords }: DisplayKeyboardMacroProps) {
 }
 
 export function DisplayKeyChord({ modifiers, code }: KeyChord) {
-  const modifierString = useMemo(
-    () => modifiersToString(modifiers),
-    [modifiers]
-  );
   const modifierList = useMemo(
     () => modifiersToCanonical(modifiers),
     [modifiers]
   );
+  const labels = useMemo(() => modifierList.map(modifierLabel), [modifierList]);
 
-  return code === undefined ? (
-    modifierString
-  ) : (
+  if (code === undefined) {
+    return labels.length === 0 ? null : (
+      <Text size="xs" strong>
+        {labels.join(" + ")}
+      </Text>
+    );
+  }
+
+  return (
     <div className="flex flex-row gap-1">
-      {modifierList.length !== 0 && (
+      {labels.length !== 0 && (
         <div className="flex flex-col gap-0.5">
-          {modifierList.map((m, i) => (
+          {labels.map((label, i) => (
             <Text key={i} size="xs" strong>
-              {m}
+              {label}
             </Text>
           ))}
         </div>

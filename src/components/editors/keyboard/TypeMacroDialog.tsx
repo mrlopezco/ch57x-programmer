@@ -138,6 +138,11 @@ export function TypeMacroDialog({
           <DialogTitle as={H3} strong>
             Capture key sequence
           </DialogTitle>
+          <Text size="sm" className="text-secondary dark:text-neutral-300">
+            Tip: OS-reserved chords (Ctrl+Alt+F1, Win+…) are often swallowed by
+            Windows before the browser sees them. Prefer clicking modifiers and
+            keys in the editor for those combos.
+          </Text>
           <Field className="flex flex-col gap-1">
             <Label as={Text} size="sm" strong>
               Type a key sequence

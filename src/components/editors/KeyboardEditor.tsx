@@ -1,9 +1,10 @@
 import { Radio, RadioGroup } from "@headlessui/react";
 import { cva } from "class-variance-authority";
-import { Minus, Plus, Save, Type } from "lucide-react";
-import React, { useState } from "react";
+import { Minus, Plus, Type } from "lucide-react";
+import React, { useMemo, useState } from "react";
 
 import { Code, isModifier, KeyChord, Modifier } from "@model/keyboard";
+import { formatKeyChordSummary } from "@model/modifier_labels";
 import { Button } from "@ux/Button";
 import { Text } from "@ux/Typography";
 
@@ -73,6 +74,13 @@ export function KeyboardEditor({
   const [selectedKey, setSelectedKey] = useState(0);
   const selectedChord = keyChords[selectedKey];
 
+  const chordSummary = useMemo(() => {
+    if (!selectedChord) {
+      return "Click modifiers and a key below (e.g. Ctrl + Alt + F1)";
+    }
+    return formatKeyChordSummary(selectedChord.modifiers, selectedChord.code);
+  }, [selectedChord]);
+
   const onKeyClick = (code: Code | Modifier) => {
     const updated = [...keyChords];
 
@@ -117,11 +125,23 @@ export function KeyboardEditor({
   return (
     <div className="flex w-184 flex-col gap-2 p-2">
       <Text strong>Key sequence</Text>
-      <Text size="sm" danger={edited}>
+      <Text size="sm">
         {edited
-          ? "This is the edited sequence, not yet bound to this key"
-          : "This is the current sequence bound to this key"}
+          ? "Draft only — click Apply binding below to attach this to the selected key"
+          : "This sequence is bound to the selected key (Save device / Write to keep it)"}
       </Text>
+      <div className="rounded-lg border border-neutral-300 bg-white px-3 py-2 dark:border-neutral-600 dark:bg-neutral-900">
+        <Text size="sm" className="text-secondary dark:text-neutral-300">
+          Selected chord
+        </Text>
+        <Text strong size="lg" className="font-mono">
+          {chordSummary}
+        </Text>
+        <Text size="xs" className="text-secondary dark:text-neutral-400">
+          Toggle modifiers (Ctrl, Alt, Win, …) then click the key (letter or
+          F1–F12). Order does not matter.
+        </Text>
+      </div>
       <RadioGroup
         value={selectedKey}
         onChange={setSelectedKey}
@@ -168,16 +188,17 @@ export function KeyboardEditor({
         >
           <Type />
         </Button>
-        {edited && (
-          <Button
-            variant="invisible"
-            className={editkey({ dashed: false })}
-            onClick={commit}
-          >
-            <Save />
-          </Button>
-        )}
       </RadioGroup>
+      {edited && (
+        <Button
+          variant="primary"
+          className="w-fit"
+          onClick={commit}
+          description="Apply this chord to the selected macropad key"
+        >
+          Apply binding
+        </Button>
+      )}
       <StandardLayout selectedChord={selectedChord} onClick={onKeyClick} />
       <AllKeys selectedChord={selectedChord} onClick={onKeyClick} />
       <KeyboardCode selectedChord={selectedChord} onClick={onKeyClick} />

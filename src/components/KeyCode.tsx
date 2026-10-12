@@ -42,6 +42,7 @@ import {
   WellKnownCode,
 } from "@model/key_codes";
 import { Code, isModifier, Modifier } from "@model/keyboard";
+import { modifierLabel } from "@model/modifier_labels";
 import { useKeyboardLayout } from "@model/useKeyboardLayout";
 import { Text } from "@ux/Typography";
 
@@ -440,29 +441,48 @@ type DisplayModifierKeyProps = {
 export function DisplayModifierKey({
   modifier,
   className,
+  simple = false,
   ...other
 }: DisplayModifierKeyProps) {
-  const Icon = useMemo(() => {
+  const { Icon, label } = useMemo(() => {
+    const label = modifierLabel(modifier);
     switch (modifier) {
       case "Ctrl":
       case "RightCtrl":
-        return ChevronUp;
+        return { Icon: ChevronUp, label };
       case "Shift":
       case "RightShift":
-        return ArrowBigUp;
+        return { Icon: ArrowBigUp, label };
       case "Alt":
       case "RightAlt":
-        return Option;
+        return { Icon: Option, label };
       case "Meta":
-        return LayoutGrid;
+        return { Icon: LayoutGrid, label };
       case "RightMeta":
-        return SquareMenu;
+        return { Icon: SquareMenu, label };
     }
   }, [modifier]);
 
+  if (simple) {
+    return (
+      <span className={twMerge(commonkeyclass(), className)} {...other}>
+        <Icon className="inline-block size-4" />
+      </span>
+    );
+  }
+
   return (
-    <span className={twMerge(commonkeyclass(), className)} {...other}>
-      <Icon className="inline-block size-4" />
+    <span
+      className={twMerge(
+        commonkeyclass({ square: false }),
+        "inline-flex items-center gap-1 px-1.5",
+        className
+      )}
+      title={label}
+      {...other}
+    >
+      <Icon className="inline-block size-3.5 shrink-0" />
+      <span className="text-xs font-medium">{label}</span>
     </span>
   );
 }

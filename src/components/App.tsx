@@ -29,18 +29,23 @@ import {
   loadProfiles,
   saveProfiles,
 } from "@model/keyboard_profile";
+import { computeLayouts } from "@model/layouts";
 import { scanForKeyboard } from "@model/usb";
 import { KeyboardDevice, useKeyboardDevice } from "@model/useKeyboardDevice";
 import { KeyboardLayoutProvider } from "@model/useKeyboardLayout";
 import { Button } from "@ux/Button";
 import { H1, H2, Text } from "@ux/Typography";
 
+import { AddDeviceWizard } from "./devices/AddDeviceWizard";
+import { DeviceHome } from "./devices/DeviceHome";
 import { EditKey } from "./editors/EditKey";
 import { useSettings } from "./hooks/useSettings";
-import { Layer, OriginPreference } from "./Layer";
+import { Layer } from "./Layer";
 import { LayoutIcon } from "./LayoutIcon";
 import { Configuration } from "./settings/Configuration";
 import { Unsupported } from "./Unsupported";
+
+type AppView = "home" | "wizard" | "editor";
 
 const layertab = cva(
   [
@@ -58,38 +63,69 @@ const layertab = cva(
   }
 );
 
+function cloneBindings(bindingsByLayer: KeyBinding[][]): KeyBinding[][] {
+  return JSON.parse(JSON.stringify(bindingsByLayer)) as KeyBinding[][];
+}
+
+function bindingsFromDeviceRead(
+  keyBindings: KeyBinding[],
+  layers: number,
+  buttons: number,
+  encoders: number
+): KeyBinding[][] {
+  const result: KeyBinding[][] = Array.from({ length: layers }, () => []);
+  for (const binding of keyBindings) {
+    if (binding.origin === "placeholder") {
+      continue;
+    }
+    if (binding.layer >= layers) {
+      continue;
+    }
+    if (typeof binding.key === "number") {
+      if (binding.key >= buttons) {
+        continue;
+      }
+    } else if (binding.key[0] >= encoders) {
+      continue;
+    }
+    result[binding.layer]!.push({ ...binding, origin: "device" });
+  }
+  for (const layer of result) {
+    layer.sort((a, b) => keysCompare(a.key, b.key));
+  }
+  return result;
+}
+
 export function App() {
   const { settings, changeSettings } = useSettings();
-  const [originPreference, setOriginPreference] =
-    useState<OriginPreference>("profile");
-  const [devices, setDevices] = useState<HIDDevice[]>([]);
-  const [selectedDevice, setSelectedDevice] = useState(-1);
+  const [view, setView] = useState<AppView>("home");
+  const [hidDevices, setHidDevices] = useState<HIDDevice[]>([]);
+  const [selectedHidIndex, setSelectedHidIndex] = useState(-1);
   const [keyboardDevice, setKeyboardDevice] = useState<KeyboardDevice>({
     keyboard: NoopKeyboard,
   });
-  const [profiles, setProfiles] = useState<KeyboardProfile[]>(() =>
+  const [savedDevices, setSavedDevices] = useState<KeyboardProfile[]>(() =>
     loadProfiles()
   );
-  const [selectedLayout, setSelectedLayout] = useState<KeyLayout>(() => {
-    const defaultProfile = profiles.find(
-      p => p.name.toLowerCase() === "default"
-    );
-    return defaultProfile ? defaultProfile.layout : { rows: 0, columns: 0 };
-  });
-  const [selectedProfile, setSelectedProfile] = useState<
+  const [activeDevice, setActiveDevice] = useState<
     KeyboardProfile | undefined
-  >(() => profiles.find(p => p.name.toLowerCase() === "default"));
-  const profileBindings = useMemo(
-    () => selectedProfile?.bindingsByLayer ?? [],
-    [selectedProfile]
+  >();
+  const [selectedLayout, setSelectedLayout] = useState<KeyLayout>({
+    rows: 0,
+    columns: 0,
+  });
+  const [userKeyboardDeviceType, setUserKeyboardDeviceType] = useState<
+    KeyboardDeviceType | undefined
+  >();
+  const [baseBindings, setBaseBindings] = useState<KeyBinding[][]>([]);
+  const [editedBindings, setEditedBindings] = useState<KeyBinding[]>([]);
+
+  const currentHidDevice = useMemo(
+    () => (selectedHidIndex >= 0 ? hidDevices[selectedHidIndex] : undefined),
+    [hidDevices, selectedHidIndex]
   );
 
-  const currentDevice = useMemo(
-    () => (selectedDevice >= 0 ? devices[selectedDevice] : undefined),
-    [devices, selectedDevice]
-  );
   const {
-    keyBindings,
     readConfiguration,
     keyboardDeviceType,
     busy,
@@ -98,46 +134,50 @@ export function App() {
     capabilities,
   } = useKeyboardDevice(keyboardDevice);
 
-  const [userKeyboardDeviceType, setUserKeyboardDeviceType] = useState<
-    KeyboardDeviceType | undefined
-  >(() => selectedProfile?.userKeyboardDeviceType ?? undefined);
+  // Always prefer the user's saved geometry so HID packets cannot reset the grid.
+  const effectiveDeviceType = useMemo<KeyboardDeviceType>(() => {
+    if (userKeyboardDeviceType && userKeyboardDeviceType.buttons > 0) {
+      return userKeyboardDeviceType;
+    }
+    if (keyboardDeviceType.buttons > 0) {
+      return {
+        ...keyboardDeviceType,
+        layers: Math.min(Math.max(keyboardDeviceType.layers || 1, 1), 3),
+      };
+    }
+    return {
+      family: keyboardDeviceType.family,
+      buttons: 6,
+      encoders: 1,
+      layers: 1,
+    };
+  }, [userKeyboardDeviceType, keyboardDeviceType]);
 
-  const [editedBindings, setEditedBindings] = useState<KeyBinding[]>([]);
-
-  const bindingsByLayer = React.useMemo(() => {
-    const layers: KeyBinding[][] = Array(
-      userKeyboardDeviceType?.layers ?? keyboardDeviceType.layers
-    )
+  const bindingsByLayer = useMemo(() => {
+    const layers: KeyBinding[][] = Array(effectiveDeviceType.layers || 1)
       .fill(null)
       .map(() => []);
 
-    const buttons =
-      userKeyboardDeviceType?.buttons ?? keyboardDeviceType.buttons;
-    const encoders =
-      userKeyboardDeviceType?.encoders ?? keyboardDeviceType.encoders;
+    const buttons = effectiveDeviceType.buttons;
+    const encoders = effectiveDeviceType.encoders;
 
-    const bindingByPriority =
-      originPreference === "profile"
-        ? [profileBindings.flat(), keyBindings]
-        : [keyBindings, profileBindings.flat()];
-    for (const bindingSet of bindingByPriority) {
-      for (const binding of bindingSet) {
-        if (binding.layer >= layers.length) {
+    for (const binding of baseBindings.flat()) {
+      if (binding.layer >= layers.length) {
+        continue;
+      }
+      if (typeof binding.key === "number") {
+        if (binding.key >= buttons) {
           continue;
         }
-        if (typeof binding.key === "number") {
-          if (binding.key >= buttons) {
-            continue;
-          }
-        } else if (binding.key[0] >= encoders) {
-          continue;
-        }
-        const layer = layers[binding.layer]!;
-        if (!layer.some(({ key }) => keysAreEqual(key, binding.key))) {
-          layers[binding.layer]!.push(binding);
-        }
+      } else if (binding.key[0] >= encoders) {
+        continue;
+      }
+      const layer = layers[binding.layer]!;
+      if (!layer.some(({ key }) => keysAreEqual(key, binding.key))) {
+        layer.push(binding);
       }
     }
+
     for (const edited of editedBindings) {
       const layer = layers[edited.layer];
       if (!layer) {
@@ -150,143 +190,89 @@ export function App() {
         layer[index] = edited;
       }
     }
+
     for (const layer of layers) {
       layer.sort((a, b) => keysCompare(a.key, b.key));
     }
     return layers;
-  }, [
-    editedBindings,
-    keyBindings,
-    keyboardDeviceType.buttons,
-    keyboardDeviceType.encoders,
-    keyboardDeviceType.layers,
-    originPreference,
-    profileBindings,
-    userKeyboardDeviceType?.buttons,
-    userKeyboardDeviceType?.encoders,
-    userKeyboardDeviceType?.layers,
-  ]);
+  }, [baseBindings, editedBindings, effectiveDeviceType]);
 
-  const addProfile = useCallback(
-    (name: string) => {
-      if (!currentDevice) {
+  const attachHidKeyboard = useCallback((workingDevice: HIDDevice) => {
+    if ((workingDevice.productId & 0x884f) === workingDevice.productId) {
+      setKeyboardDevice(prev =>
+        prev.device === workingDevice &&
+        prev.keyboard.name !== NoopKeyboard.name
+          ? prev
+          : { keyboard: makeKeyboard884x(), device: workingDevice }
+      );
+      return;
+    }
+    if (workingDevice.productId === 0x8890) {
+      setKeyboardDevice(prev =>
+        prev.device === workingDevice &&
+        prev.keyboard.name !== NoopKeyboard.name
+          ? prev
+          : { keyboard: makeKeyboard8890(), device: workingDevice }
+      );
+    }
+  }, []);
+
+  const onHidDeviceChange = useCallback(
+    (workingDevice: HIDDevice | undefined) => {
+      if (workingDevice === undefined) {
+        startTransition(() => {
+          setKeyboardDevice(prev => {
+            if (prev.keyboard.name === NoopKeyboard.name) {
+              return prev;
+            }
+            return { keyboard: NoopKeyboard };
+          });
+        });
         return;
       }
 
-      const profile: KeyboardProfile = {
-        name,
-        vendorId: 4489,
-        productId: currentDevice?.productId,
-        keyboardDeviceType: {
-          ...keyboardDeviceType,
-        },
-        userKeyboardDeviceType: userKeyboardDeviceType
-          ? { ...userKeyboardDeviceType }
-          : undefined,
-        layout: { ...selectedLayout },
-        bindingsByLayer: JSON.parse(JSON.stringify(bindingsByLayer)),
-      };
+      if (workingDevice.opened) {
+        attachHidKeyboard(workingDevice);
+        return;
+      }
 
-      forceOriginsToProfile(profile.bindingsByLayer);
-
-      setProfiles(prev => {
-        const updated = [...prev];
-        const index = updated.findIndex(p => p.name === name);
-        if (index < 0) {
-          updated.push(profile);
-        } else {
-          updated[index] = profile;
-        }
-        return updated;
-      });
-      setSelectedProfile(profile);
-      setOriginPreference("profile");
-      setEditedBindings([]);
-    },
-    [
-      currentDevice,
-      keyboardDeviceType,
-      userKeyboardDeviceType,
-      selectedLayout,
-      bindingsByLayer,
-    ]
-  );
-
-  const onDeviceChange = useCallback((workingDevice: HIDDevice | undefined) => {
-    if (workingDevice === undefined) {
-      startTransition(() => {
-        setKeyboardDevice(prev => {
-          if (prev.keyboard.name === NoopKeyboard.name) {
-            return prev;
-          }
-          return { keyboard: NoopKeyboard };
-        });
-      });
-      return;
-    }
-
-    if (!workingDevice.opened) {
       workingDevice
         .open()
-        .then(() => {
-          if ((workingDevice.productId & 0x884f) === workingDevice.productId) {
-            setKeyboardDevice(prev =>
-              prev.device !== workingDevice
-                ? {
-                    keyboard: makeKeyboard884x(),
-                    device: workingDevice,
-                  }
-                : prev
-            );
-          }
-          if (workingDevice.productId === 0x8890) {
-            setKeyboardDevice(prev =>
-              prev.device !== workingDevice
-                ? {
-                    keyboard: makeKeyboard8890(),
-                    device: workingDevice,
-                  }
-                : prev
-            );
-          }
-        })
+        .then(() => attachHidKeyboard(workingDevice))
         .catch(error =>
           console.error("Error opening device:", workingDevice, error)
         );
-    }
-    return () => {
-      void workingDevice.close();
-    };
-  }, []);
-  useValueChange(currentDevice, onDeviceChange);
+    },
+    [attachHidKeyboard]
+  );
+  useValueChange(currentHidDevice, onHidDeviceChange);
 
   const scan = useCallback(
     (force: boolean) => {
       scanForKeyboard(force)
         .then(devices => {
-          console.log("processed scan", devices);
-          setDevices(devices);
-          if (devices.length == 0) {
-            setSelectedDevice(-1);
+          setHidDevices(devices);
+          if (devices.length === 0) {
+            setSelectedHidIndex(-1);
           } else if (
-            selectedDevice === -1 ||
-            selectedDevice >= devices.length
+            selectedHidIndex === -1 ||
+            selectedHidIndex >= devices.length
           ) {
-            setSelectedDevice(0);
+            setSelectedHidIndex(0);
           }
         })
         .catch(error => console.error(error));
     },
-    [selectedDevice]
+    [selectedHidIndex]
   );
 
   const onVisibilityChange = useCallback(() => {
     if (document.hidden) {
-      saveProfiles(profiles);
+      saveProfiles(savedDevices);
     } else {
       scan(false);
     }
-  }, [profiles, scan]);
+  }, [savedDevices, scan]);
   const documentRef = useRef(document);
   useEventListener("visibilitychange", onVisibilityChange, documentRef);
 
@@ -302,7 +288,7 @@ export function App() {
   );
   useValueChange(started, onStarted, { callOnMount: true });
 
-  const onHidCHange = useCallback(
+  const onHidChange = useCallback(
     (change: HidChange) => {
       if (change === "Connected" || change === "Disconnected") {
         scan(false);
@@ -310,31 +296,12 @@ export function App() {
     },
     [scan]
   );
+  const hidChange = useHidChange(onHidChange);
 
-  const hidChange = useHidChange(onHidCHange);
-
-  const layouts = useMemo<{ rows: number; columns: number }[]>(() => {
-    const buttons =
-      userKeyboardDeviceType?.buttons ?? keyboardDeviceType.buttons;
-    if (buttons === 0) {
-      return [{ rows: 0, columns: 0 }];
-    }
-    if (buttons === 1) {
-      return [{ rows: 1, columns: 1 }];
-    }
-    const layouts = [{ rows: 1, columns: buttons }];
-    for (const factor of [2, 3, 4, 5, 6, 7]) {
-      if (factor >= buttons) {
-        break;
-      }
-      const compliment = buttons / factor;
-      if (Number.isInteger(compliment)) {
-        layouts.push({ rows: factor, columns: compliment });
-      }
-    }
-    layouts.push({ rows: buttons, columns: 1 });
-    return layouts;
-  }, [userKeyboardDeviceType, keyboardDeviceType.buttons]);
+  const layouts = useMemo(
+    () => computeLayouts(effectiveDeviceType.buttons),
+    [effectiveDeviceType.buttons]
+  );
 
   const [selectedBinding, setSelectedBinding] = useState<
     Omit<KeyBinding, "expansion" | "origin">
@@ -342,6 +309,8 @@ export function App() {
     key: -1,
     layer: -1,
   });
+
+  const [workingMacro, setWorkingMacro] = useState<Macro | undefined>();
 
   const selectBinding = useCallback(
     ({ key, layer }: Omit<KeyBinding, "expansion" | "origin">) => {
@@ -351,6 +320,7 @@ export function App() {
         }
         return { key, layer };
       });
+      setWorkingMacro(undefined);
     },
     []
   );
@@ -359,164 +329,413 @@ export function App() {
     if (selectedBinding.key === -1 || selectedBinding.layer === -1) {
       return;
     }
-
     const layer = bindingsByLayer[selectedBinding.layer] ?? [];
-
     return layer.find(binding =>
       keysAreEqual(binding.key, selectedBinding.key)
     );
   }, [bindingsByLayer, selectedBinding]);
-  const [workingMacro, setWorkingMacro] = useState<Macro | undefined>();
+
   const commitWorkingMacro = useCallback(() => {
-    if (!workingMacro || !currentBinding) {
+    if (!workingMacro) {
       return;
     }
+    if (selectedBinding.key === -1 || selectedBinding.layer === -1) {
+      return;
+    }
+    const target = currentBinding ?? {
+      key: selectedBinding.key,
+      layer: selectedBinding.layer,
+      expansion: workingMacro,
+      origin: "editor" as const,
+    };
     const updated = [...editedBindings];
     const index = updated.findIndex(
       ({ key, layer }) =>
-        currentBinding.layer === layer && keysAreEqual(currentBinding.key, key)
+        target.layer === layer && keysAreEqual(target.key, key)
     );
     if (index < 0) {
       updated.push({
-        ...currentBinding,
+        ...target,
         expansion: workingMacro,
         origin: "editor",
       });
     } else {
       updated[index] = {
-        ...currentBinding,
+        ...target,
         expansion: workingMacro,
         origin: "editor",
       };
     }
     setEditedBindings(updated);
     setWorkingMacro(undefined);
-  }, [workingMacro, currentBinding, editedBindings]);
-
-  const selectProfile = useCallback((profile: KeyboardProfile | undefined) => {
-    if (profile) {
-      setOriginPreference("profile");
-      setSelectedLayout({ ...profile.layout });
-      setUserKeyboardDeviceType(
-        profile.userKeyboardDeviceType
-          ? { ...profile.userKeyboardDeviceType }
-          : undefined
-      );
-    }
-    setSelectedProfile(profile);
-  }, []);
+  }, [workingMacro, currentBinding, editedBindings, selectedBinding]);
 
   const onClearLayerEdits = useCallback((layer: number) => {
     setEditedBindings(prev => prev.filter(binding => binding.layer !== layer));
   }, []);
 
-  const onReadConfiguration = useCallback(() => {
+  const persistDevices = useCallback((devices: KeyboardProfile[]) => {
+    setSavedDevices(devices);
+    saveProfiles(devices);
+  }, []);
+
+  const applyReadBindings = useCallback(
+    (bindings: KeyBinding[]) => {
+      const next = bindingsFromDeviceRead(
+        bindings,
+        effectiveDeviceType.layers || 1,
+        effectiveDeviceType.buttons,
+        effectiveDeviceType.encoders
+      );
+      setBaseBindings(next);
+      setEditedBindings([]);
+      setActiveDevice(prev =>
+        prev
+          ? {
+              ...prev,
+              layout: { ...selectedLayout },
+              userKeyboardDeviceType: userKeyboardDeviceType
+                ? { ...userKeyboardDeviceType }
+                : prev.userKeyboardDeviceType,
+              bindingsByLayer: cloneBindings(next),
+            }
+          : prev
+      );
+      return next;
+    },
+    [effectiveDeviceType, selectedLayout, userKeyboardDeviceType]
+  );
+
+  const onReadConfiguration = useCallback(async (): Promise<KeyBinding[]> => {
     if (!capabilities.readConfiguration) {
-      return;
+      return [];
     }
-    setOriginPreference("device");
-    readConfiguration();
-  }, [readConfiguration, capabilities.readConfiguration]);
+    const bindings = await readConfiguration();
+    if (view === "editor" && bindings.length > 0) {
+      applyReadBindings(bindings);
+    }
+    return bindings;
+  }, [
+    readConfiguration,
+    capabilities.readConfiguration,
+    view,
+    applyReadBindings,
+  ]);
+
   const [writing, setWriting] = useState(false);
   const onWriteConfiguration = useCallback(() => {
     if (writing) {
       return;
     }
     setWriting(true);
-    writeKeyBindings(bindingsByLayer.flat())
+    const writtenLayers = cloneBindings(bindingsByLayer);
+    writeKeyBindings(writtenLayers.flat())
       .then(succeeded => {
-        if (succeeded) {
-          setEditedBindings([]);
-          readConfiguration();
+        if (!succeeded) {
+          return;
         }
+        // Keep showing exactly what we wrote — do not auto-read from HID.
+        const asDevice = writtenLayers.map(layer =>
+          layer.map(binding => ({ ...binding, origin: "device" as const }))
+        );
+        setBaseBindings(asDevice);
+        setEditedBindings([]);
+
+        if (!activeDevice) {
+          return;
+        }
+        const persisted: KeyboardProfile = {
+          ...activeDevice,
+          layout: { ...selectedLayout },
+          userKeyboardDeviceType: userKeyboardDeviceType
+            ? { ...userKeyboardDeviceType }
+            : activeDevice.userKeyboardDeviceType,
+          keyboardDeviceType: userKeyboardDeviceType
+            ? { ...userKeyboardDeviceType }
+            : { ...activeDevice.keyboardDeviceType },
+          bindingsByLayer: cloneBindings(asDevice),
+        };
+        forceOriginsToProfile(persisted.bindingsByLayer);
+        setActiveDevice(persisted);
+        const next = [...savedDevices];
+        const index = next.findIndex(d => d.name === persisted.name);
+        if (index < 0) {
+          next.push(persisted);
+        } else {
+          next[index] = persisted;
+        }
+        persistDevices(next);
       })
       .catch(error => console.error(error))
       .finally(() => setWriting(false));
-  }, [writing, writeKeyBindings, bindingsByLayer, readConfiguration]);
+  }, [
+    writing,
+    writeKeyBindings,
+    bindingsByLayer,
+    activeDevice,
+    selectedLayout,
+    userKeyboardDeviceType,
+    savedDevices,
+    persistDevices,
+  ]);
+
+  const buildActiveProfile = useCallback((): KeyboardProfile | undefined => {
+    if (!activeDevice) {
+      return;
+    }
+    const bindings = cloneBindings(bindingsByLayer);
+    forceOriginsToProfile(bindings);
+    const geometry = { ...effectiveDeviceType };
+    return {
+      ...activeDevice,
+      keyboardDeviceType: geometry,
+      userKeyboardDeviceType: geometry,
+      layout: { ...selectedLayout },
+      bindingsByLayer: bindings,
+    };
+  }, [activeDevice, bindingsByLayer, effectiveDeviceType, selectedLayout]);
+
+  const onSaveDevice = useCallback(() => {
+    const updated = buildActiveProfile();
+    if (!updated) {
+      return;
+    }
+    setActiveDevice(updated);
+    const next = [...savedDevices];
+    const index = next.findIndex(d => d.name === updated.name);
+    if (index < 0) {
+      next.push(updated);
+    } else {
+      next[index] = updated;
+    }
+    persistDevices(next);
+    setEditedBindings([]);
+    setBaseBindings(cloneBindings(updated.bindingsByLayer));
+  }, [buildActiveProfile, savedDevices, persistDevices]);
+
+  const onOpenDevice = useCallback(
+    (device: KeyboardProfile) => {
+      setActiveDevice(device);
+      setSelectedLayout({ ...device.layout });
+      const geometry = {
+        ...(device.userKeyboardDeviceType ?? device.keyboardDeviceType),
+      };
+      geometry.layers = Math.min(Math.max(geometry.layers || 1, 1), 3);
+      setUserKeyboardDeviceType(geometry);
+      setBaseBindings(cloneBindings(device.bindingsByLayer));
+      setEditedBindings([]);
+      setSelectedBinding({ key: -1, layer: -1 });
+      setWorkingMacro(undefined);
+
+      const matchIndex = hidDevices.findIndex(
+        d => d.vendorId === device.vendorId && d.productId === device.productId
+      );
+      if (matchIndex >= 0) {
+        setSelectedHidIndex(matchIndex);
+        const matched = hidDevices[matchIndex];
+        if (matched) {
+          onHidDeviceChange(matched);
+        }
+      } else {
+        setSelectedHidIndex(-1);
+        // No granted HID yet — prompt the browser picker.
+        scanForKeyboard(true)
+          .then(devices => {
+            setHidDevices(devices);
+            const index = devices.findIndex(
+              d =>
+                d.vendorId === device.vendorId &&
+                d.productId === device.productId
+            );
+            if (index >= 0) {
+              setSelectedHidIndex(index);
+            } else if (devices.length > 0) {
+              setSelectedHidIndex(0);
+            }
+          })
+          .catch(error => console.error(error));
+      }
+
+      setView("editor");
+    },
+    [hidDevices, onHidDeviceChange]
+  );
+
+  const onDeleteDevice = useCallback(
+    (device: KeyboardProfile) => {
+      const next = savedDevices.filter(d => d.name !== device.name);
+      persistDevices(next);
+    },
+    [savedDevices, persistDevices]
+  );
+
+  const onWizardSave = useCallback(
+    (device: KeyboardProfile) => {
+      const next = [...savedDevices];
+      const index = next.findIndex(d => d.name === device.name);
+      if (index < 0) {
+        next.push(device);
+      } else {
+        next[index] = device;
+      }
+      persistDevices(next);
+      setView("home");
+    },
+    [savedDevices, persistDevices]
+  );
+
+  const onSelectHidDevice = useCallback(
+    (device: HIDDevice | undefined) => {
+      setSelectedHidIndex(device ? hidDevices.indexOf(device) : -1);
+    },
+    [hidDevices]
+  );
 
   if (hidChange === "NotSupported") {
     return <Unsupported />;
+  }
+
+  if (view === "home") {
+    return (
+      <KeyboardLayoutProvider>
+        <DeviceHome
+          devices={savedDevices}
+          onAddDevice={() => setView("wizard")}
+          onOpenDevice={onOpenDevice}
+          onDeleteDevice={onDeleteDevice}
+          settings={settings}
+          onChangeSettings={changeSettings}
+        />
+      </KeyboardLayoutProvider>
+    );
+  }
+
+  if (view === "wizard") {
+    return (
+      <KeyboardLayoutProvider>
+        <AddDeviceWizard
+          hidDevices={hidDevices}
+          selectedHidDevice={currentHidDevice}
+          onSelectHidDevice={onSelectHidDevice}
+          onRequestHidDevice={() => scan(true)}
+          keyboardDeviceType={keyboardDeviceType}
+          canRead={capabilities.readConfiguration}
+          busy={busy}
+          onReadConfiguration={onReadConfiguration}
+          existingNames={savedDevices.map(d => d.name)}
+          onCancel={() => setView("home")}
+          onSave={onWizardSave}
+        />
+      </KeyboardLayoutProvider>
+    );
   }
 
   return (
     <KeyboardLayoutProvider>
       <div className="text-default flex max-h-screen min-h-screen flex-row gap-2 overflow-hidden bg-neutral-100 dark:bg-neutral-800 dark:text-white">
         <Configuration
-          devices={devices}
-          selectedDevice={devices[selectedDevice]}
-          onSelectDevice={device =>
-            setSelectedDevice(device ? devices.indexOf(device) : -1)
-          }
+          deviceName={activeDevice?.name ?? "Device"}
+          devices={hidDevices}
+          selectedDevice={currentHidDevice}
+          onSelectDevice={onSelectHidDevice}
           onAddDevice={() => scan(true)}
           layouts={layouts}
           selectedLayout={selectedLayout}
           onSelectLayout={update => setSelectedLayout(update)}
-          keyboardDeviceType={keyboardDeviceType}
-          userKeyboardDeviceType={userKeyboardDeviceType}
-          onChangeKeyboardDeviceType={setUserKeyboardDeviceType}
-          canReadWriteConfiguration={currentDevice !== undefined && !busy}
+          keyboardDeviceType={effectiveDeviceType}
+          userKeyboardDeviceType={userKeyboardDeviceType ?? effectiveDeviceType}
+          onChangeKeyboardDeviceType={update => {
+            setUserKeyboardDeviceType({
+              ...update,
+              layers: Math.min(Math.max(update.layers || 1, 1), 3),
+            });
+          }}
+          canReadWriteConfiguration={currentHidDevice !== undefined && !busy}
           onReadConfiguration={
             capabilities.readConfiguration ? onReadConfiguration : undefined
           }
           onWriteConfiguration={onWriteConfiguration}
-          profiles={profiles}
-          selectedProfile={selectedProfile}
-          onSelectProfile={selectProfile}
-          onChangeProfiles={setProfiles}
-          onAddProfile={addProfile}
+          onSaveDevice={onSaveDevice}
+          onBack={() => {
+            setView("home");
+            setActiveDevice(undefined);
+          }}
           settings={settings}
           onChangeSettings={changeSettings}
         />
         <div className="flex flex-1 flex-col items-center gap-4 overflow-y-scroll">
           <div className="flex flex-col gap-2">
             <H1 className="m-4 inline-flex items-center gap-2">
-              <LayoutIcon rows={3} columns={4} encoders={2} />
-              ch57x keyboard tool
+              <LayoutIcon
+                rows={selectedLayout.rows || 2}
+                columns={selectedLayout.columns || 3}
+                encoders={effectiveDeviceType.encoders}
+              />
+              {activeDevice?.name ?? "Device"}
             </H1>
+            {currentHidDevice === undefined && (
+              <Text
+                size="sm"
+                className="mx-4 text-amber-700 dark:text-amber-400"
+              >
+                Keyboard not connected. Use the sidebar Keyboard dropdown → Add
+                keyboard, then Read becomes available.
+              </Text>
+            )}
             <TabGroup className="flex flex-row gap-2" defaultIndex={0} vertical>
               <div className="flex flex-col gap-4">
                 <TabList className="flex flex-col gap-1">
-                  {({ selectedIndex }) => {
-                    return (
-                      <>
-                        {bindingsByLayer.map((_, layer) => {
-                          const isDirty = editedBindings.some(
-                            b => b.layer === layer
-                          );
-                          return (
-                            <Tab
-                              key={layer}
-                              className={layertab({
-                                selected: selectedIndex === layer,
-                              })}
-                            >
-                              <Text>Layer {layer + 1}</Text>
-                              {isDirty ? (
-                                <Asterisk className="size-3 text-red-500" />
-                              ) : (
-                                <div className="size-3" />
-                              )}
-                            </Tab>
-                          );
-                        })}
-                      </>
-                    );
-                  }}
+                  {({ selectedIndex }) => (
+                    <>
+                      {bindingsByLayer.map((_, layer) => {
+                        const isDirty = editedBindings.some(
+                          b => b.layer === layer
+                        );
+                        return (
+                          <Tab
+                            key={layer}
+                            className={layertab({
+                              selected: selectedIndex === layer,
+                            })}
+                          >
+                            <Text>Layer {layer + 1}</Text>
+                            {isDirty ? (
+                              <Asterisk className="size-3 text-red-500" />
+                            ) : (
+                              <div className="size-3" />
+                            )}
+                          </Tab>
+                        );
+                      })}
+                    </>
+                  )}
                 </TabList>
                 <Button
                   className="flex w-24 items-center justify-around gap-2"
-                  description="Read the current key-bindings from the selected device"
-                  onClick={onReadConfiguration}
-                  disabled={!capabilities.readConfiguration}
+                  description={
+                    currentHidDevice === undefined
+                      ? "Connect the keyboard in the sidebar first"
+                      : "Read the current key-bindings from the selected device"
+                  }
+                  onClick={() => void onReadConfiguration()}
+                  disabled={
+                    currentHidDevice === undefined ||
+                    busy ||
+                    !capabilities.readConfiguration
+                  }
                 >
                   <HardDriveUpload className="size-6" />
                   <Text size="sm">Read</Text>
                 </Button>
                 <Button
-                  disabled={writing || busy}
+                  disabled={currentHidDevice === undefined || writing || busy}
                   onClick={onWriteConfiguration}
                   className="flex size-24 flex-col items-center justify-around gap-2"
-                  description="Write the current key-bindings to the selected device"
+                  description={
+                    currentHidDevice === undefined
+                      ? "Connect the keyboard in the sidebar first"
+                      : "Write the current key-bindings to the selected device"
+                  }
                 >
                   <HardDriveDownload className="size-8" />
                   <Text size="sm">Write</Text>
@@ -532,17 +751,11 @@ export function App() {
                       <Layer
                         layer={layer}
                         keyBindings={bindings}
-                        keyboardDeviceType={
-                          userKeyboardDeviceType ?? keyboardDeviceType
-                        }
+                        keyboardDeviceType={effectiveDeviceType}
                         selectedBinding={selectedBinding}
                         onSelectBinding={selectBinding}
                         keyLayout={selectedLayout}
-                        originPreference={originPreference}
-                        onChangeOriginPreference={setOriginPreference}
                         onClearLayerEdits={onClearLayerEdits}
-                        haveProfile={selectedProfile !== undefined}
-                        profileName={selectedProfile?.name ?? ""}
                       />
                     </TabPanel>
                   ))}

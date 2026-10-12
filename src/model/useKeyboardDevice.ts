@@ -12,7 +12,6 @@ import {
   KeyboardCapabilities,
   KeyboardDeviceType,
   keysAreEqual,
-  macrosAreEqual,
   UNKNOWN_KEYBOARD_DEVICE,
 } from "./keyboard";
 
@@ -28,12 +27,14 @@ export type ActiveKeyboardDevice = {
   errors: Error[];
   busy: boolean;
   readDeviceType: () => void;
-  readConfiguration: () => void;
+  readConfiguration: () => Promise<KeyBinding[]>;
   writeKeyBindings: (bindings: KeyBinding[]) => Promise<boolean>;
   capabilities: KeyboardCapabilities;
 };
 
 const DEBOUNCE_PARAMS = { leading: false, trailing: true };
+const READ_SETTLE_MS = 150;
+const READ_TIMEOUT_MS = 2500;
 
 export function useKeyboardDevice({
   keyboard,
@@ -95,11 +96,6 @@ export function useKeyboardDevice({
     }
     const newBindings = pendingBindings.current;
     pendingBindings.current = [];
-    const maxLayer =
-      newBindings.reduce(
-        (accumulator, { layer }) => Math.max(accumulator, layer),
-        0
-      ) + 1;
 
     setKeyBindings(bindings => {
       const update = [...bindings];
@@ -117,11 +113,7 @@ export function useKeyboardDevice({
 
       return update;
     });
-    setDeviceType(deviceType =>
-      deviceType.layers >= maxLayer
-        ? deviceType
-        : { ...deviceType, layers: maxLayer }
-    );
+    // Do not grow deviceType.layers from config packets — that reflows the editor UI.
   }, []);
 
   const updateKeyBindings = useDebounceCallback(
@@ -136,7 +128,6 @@ export function useKeyboardDevice({
       return;
     }
     if (!keyboard.capabilities.readConfiguration) {
-      // If possible infer basic info from the capabilities.
       const family = keyboard.name;
       if (isKeyboardFamily(family)) {
         setDeviceType({
@@ -184,17 +175,21 @@ export function useKeyboardDevice({
 
         switch (keyboard.checkPacketType(array)) {
           case "device": {
-            const deviceType = keyboard.parseDeviceTypePacket(array);
-            if (deviceType !== undefined) {
+            const parsed = keyboard.parseDeviceTypePacket(array);
+            if (parsed !== undefined) {
               setDeviceType(prev => {
                 if (
-                  prev.family === deviceType.family &&
-                  prev.buttons === deviceType.buttons &&
-                  prev.encoders === deviceType.encoders
+                  prev.family === parsed.family &&
+                  prev.buttons === parsed.buttons &&
+                  prev.encoders === parsed.encoders
                 ) {
                   return prev;
                 }
-                return deviceType;
+                // Keep layers from previous user/firmware state if parse omits them.
+                return {
+                  ...parsed,
+                  layers: parsed.layers > 0 ? parsed.layers : prev.layers || 3,
+                };
               });
             }
             break;
@@ -226,86 +221,94 @@ export function useKeyboardDevice({
   );
   useValueChange(device, onDeviceChange);
 
-  const readConfiguration = useCallback(() => {
+  const waitForSettledBindings = useCallback((): Promise<KeyBinding[]> => {
+    const started = performance.now();
+    let lastCount = -1;
+    let stableSince = performance.now();
+
+    return new Promise(resolve => {
+      const poll = () => {
+        const count = pendingBindings.current.length;
+        if (count !== lastCount) {
+          lastCount = count;
+          stableSince = performance.now();
+        }
+        const settled =
+          count > 0 && performance.now() - stableSince >= READ_SETTLE_MS;
+        const timedOut = performance.now() - started >= READ_TIMEOUT_MS;
+        if (settled || timedOut) {
+          const unique = dedupeBindings([...pendingBindings.current]);
+          pendingBindings.current = [];
+          resolve(unique);
+          return;
+        }
+        requestAnimationFrame(poll);
+      };
+      requestAnimationFrame(poll);
+    });
+  }, []);
+
+  const readConfiguration = useCallback(async (): Promise<KeyBinding[]> => {
     if (!device || pending || !keyboard.capabilities.readConfiguration) {
-      return;
+      return [];
     }
 
     setPending(true);
-    device
-      .sendReport(3, makeBuffer(keyboard.readConfig(0)))
-      .then(() => device.sendReport(3, makeBuffer(keyboard.readConfig(1))))
-      .then(() => device.sendReport(3, makeBuffer(keyboard.readConfig(2))))
-      .then(() => device.sendReport(3, makeBuffer(keyboard.readConfig(3))))
-      .catch(error => setErrors(prev => [...prev, error]))
-      .finally(() => setPending(false));
-  }, [keyboard, device, pending]);
+    pauseUpdate.current = true;
+    pendingBindings.current = [];
+
+    try {
+      await device.sendReport(3, makeBuffer(keyboard.readConfig(0)));
+      await device.sendReport(3, makeBuffer(keyboard.readConfig(1)));
+      await device.sendReport(3, makeBuffer(keyboard.readConfig(2)));
+      await device.sendReport(3, makeBuffer(keyboard.readConfig(3)));
+
+      const snapshot = await waitForSettledBindings();
+      const withOrigin = snapshot.map(binding => ({
+        ...binding,
+        origin: "device" as const,
+      }));
+      setKeyBindings(withOrigin);
+      return withOrigin;
+    } catch (error) {
+      setErrors(prev => [...prev, error as Error]);
+      return [];
+    } finally {
+      pauseUpdate.current = false;
+      setPending(false);
+    }
+  }, [keyboard, device, pending, waitForSettledBindings]);
 
   const writeKeyBindings = useCallback(
     async (bindings: KeyBinding[]): Promise<boolean> => {
       if (!device || pending || pauseUpdate.current) {
         return false;
       }
-      if (keyboard.capabilities.readConfiguration) {
-        pauseUpdate.current = true;
-        readConfiguration();
-      }
-      const started = performance.now();
-      const deviceBindings = keyboard.capabilities.readConfiguration
-        ? await new Promise<KeyBinding[]>((resolve, reject) => {
-            const write = () => {
-              if (keyBindings.length == pendingBindings.current.length) {
-                const bindings = pendingBindings.current;
-                pauseUpdate.current = false;
-                pendingBindings.current = [];
-                resolve(bindings);
-              } else if (performance.now() - started > 500) {
-                pauseUpdate.current = false;
-                updateKeyBindings();
-                reject(new Error("Timed out waiting for key bindings"));
-              } else {
-                requestAnimationFrame(write);
-              }
-            };
-            requestAnimationFrame(write);
-          })
-        : [];
 
       setPending(true);
+      pauseUpdate.current = true;
       try {
-        // find the bindings that are different on the device
-        const updates = bindings.filter(binding => {
-          const matching = deviceBindings.find(
-            ({ key, layer }) =>
-              binding.layer === layer && keysAreEqual(key, binding.key)
-          );
-
-          if (matching === undefined) {
-            return true;
-          }
-          return !macrosAreEqual(binding.expansion, matching.expansion);
-        });
-
-        const packets = updates.flatMap(({ layer, key, expansion }) =>
+        const packets = bindings.flatMap(({ layer, key, expansion }) =>
           keyboard.bindKey(layer, key, expansion)
         );
 
         for (const packet of packets) {
           await device.sendReport(3, makeBuffer(packet));
         }
+
+        setKeyBindings(
+          bindings.map(binding => ({ ...binding, origin: "device" as const }))
+        );
         return true;
+      } catch (error) {
+        setErrors(prev => [...prev, error as Error]);
+        return false;
       } finally {
+        pauseUpdate.current = false;
         setPending(false);
       }
     },
-    [
-      device,
-      readConfiguration,
-      keyBindings.length,
-      updateKeyBindings,
-      keyboard,
-      pending,
-    ]
+    [device, keyboard, pending]
   );
 
   return {
@@ -319,6 +322,21 @@ export function useKeyboardDevice({
     readConfiguration,
     writeKeyBindings,
   };
+}
+
+function dedupeBindings(bindings: KeyBinding[]): KeyBinding[] {
+  const result: KeyBinding[] = [];
+  for (const binding of bindings) {
+    const index = result.findIndex(
+      b => b.layer === binding.layer && keysAreEqual(b.key, binding.key)
+    );
+    if (index < 0) {
+      result.push(binding);
+    } else {
+      result[index] = binding;
+    }
+  }
+  return result;
 }
 
 function makeBuffer(data: number[]): Uint8Array<ArrayBuffer> {
