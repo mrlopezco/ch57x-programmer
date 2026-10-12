@@ -17,6 +17,8 @@ import {
   KeyboardDeviceType,
   keysAreEqual,
   keysCompare,
+  LedSettings,
+  LedStatus,
   Macro,
   NoopKeyboard,
 } from "@model/keyboard";
@@ -30,7 +32,7 @@ import {
   saveProfiles,
 } from "@model/keyboard_profile";
 import { computeLayouts } from "@model/layouts";
-import { scanForKeyboard } from "@model/usb";
+import { productSupportsLed, scanForKeyboard } from "@model/usb";
 import { KeyboardDevice, useKeyboardDevice } from "@model/useKeyboardDevice";
 import { KeyboardLayoutProvider } from "@model/useKeyboardLayout";
 import { Button } from "@ux/Button";
@@ -131,8 +133,12 @@ export function App() {
     busy,
     errors: keyboardErrors,
     writeKeyBindings,
+    setLed,
     capabilities,
   } = useKeyboardDevice(keyboardDevice);
+
+  const [ledStatus, setLedStatus] = useState<LedStatus>("unknown");
+  const [ledSettings, setLedSettings] = useState<LedSettings | undefined>();
 
   // Always prefer the user's saved geometry so HID packets cannot reset the grid.
   const effectiveDeviceType = useMemo<KeyboardDeviceType>(() => {
@@ -492,8 +498,29 @@ export function App() {
       userKeyboardDeviceType: geometry,
       layout: { ...selectedLayout },
       bindingsByLayer: bindings,
+      ledStatus,
+      ledSettings,
     };
-  }, [activeDevice, bindingsByLayer, effectiveDeviceType, selectedLayout]);
+  }, [
+    activeDevice,
+    bindingsByLayer,
+    effectiveDeviceType,
+    selectedLayout,
+    ledStatus,
+    ledSettings,
+  ]);
+
+  const onChangeLedStatus = useCallback((status: LedStatus) => {
+    setLedStatus(status);
+    setActiveDevice(prev => (prev ? { ...prev, ledStatus: status } : prev));
+  }, []);
+
+  const onChangeLedSettings = useCallback((settings: LedSettings) => {
+    setLedSettings(settings);
+    setActiveDevice(prev =>
+      prev ? { ...prev, ledSettings: settings } : prev
+    );
+  }, []);
 
   const onSaveDevice = useCallback(() => {
     const updated = buildActiveProfile();
@@ -524,6 +551,8 @@ export function App() {
       setUserKeyboardDeviceType(geometry);
       setBaseBindings(cloneBindings(device.bindingsByLayer));
       setEditedBindings([]);
+      setLedStatus(device.ledStatus ?? "unknown");
+      setLedSettings(device.ledSettings ?? undefined);
       setSelectedBinding({ key: -1, layer: -1 });
       setWorkingMacro(undefined);
 
@@ -662,6 +691,32 @@ export function App() {
           }}
           settings={settings}
           onChangeSettings={changeSettings}
+          supportsLed={
+            capabilities.supportsLed ||
+            productSupportsLed(
+              currentHidDevice?.productId ?? activeDevice?.productId ?? 0
+            )
+          }
+          ledBusy={busy}
+          ledProductId={
+            currentHidDevice?.productId ?? activeDevice?.productId
+          }
+          ledControls={
+            capabilities.supportsLed ||
+            productSupportsLed(
+              currentHidDevice?.productId ?? activeDevice?.productId ?? 0
+            )
+              ? {
+                  productId:
+                    currentHidDevice?.productId ?? activeDevice?.productId,
+                  ledStatus,
+                  ledSettings,
+                  onChangeLedStatus,
+                  onChangeLedSettings,
+                  onSetLed: setLed,
+                }
+              : undefined
+          }
         />
         <div className="flex flex-1 flex-col items-center gap-4 overflow-y-scroll">
           <div className="flex flex-col gap-2">

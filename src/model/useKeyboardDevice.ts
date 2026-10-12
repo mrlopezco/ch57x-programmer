@@ -12,6 +12,7 @@ import {
   KeyboardCapabilities,
   KeyboardDeviceType,
   keysAreEqual,
+  LedSettings,
   UNKNOWN_KEYBOARD_DEVICE,
 } from "./keyboard";
 
@@ -29,6 +30,7 @@ export type ActiveKeyboardDevice = {
   readDeviceType: () => void;
   readConfiguration: () => Promise<KeyBinding[]>;
   writeKeyBindings: (bindings: KeyBinding[]) => Promise<boolean>;
+  setLed: (settings: LedSettings) => Promise<boolean>;
   capabilities: KeyboardCapabilities;
 };
 
@@ -311,6 +313,34 @@ export function useKeyboardDevice({
     [device, keyboard, pending]
   );
 
+  const setLed = useCallback(
+    async (settings: LedSettings): Promise<boolean> => {
+      if (
+        !device ||
+        pending ||
+        pauseUpdate.current ||
+        !keyboard.capabilities.supportsLed
+      ) {
+        return false;
+      }
+
+      setPending(true);
+      try {
+        const packets = keyboard.setLed(settings);
+        for (const packet of packets) {
+          await device.sendReport(3, makeBuffer(packet));
+        }
+        return true;
+      } catch (error) {
+        setErrors(prev => [...prev, error as Error]);
+        return false;
+      } finally {
+        setPending(false);
+      }
+    },
+    [device, keyboard, pending]
+  );
+
   return {
     name: keyboard.name,
     capabilities: keyboard.capabilities,
@@ -321,6 +351,7 @@ export function useKeyboardDevice({
     readDeviceType,
     readConfiguration,
     writeKeyBindings,
+    setLed,
   };
 }
 

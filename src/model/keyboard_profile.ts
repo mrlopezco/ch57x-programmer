@@ -5,6 +5,10 @@ import {
   KeyBindingSchema,
   KeyboardDeviceType,
   KeyboardDeviceTypeSchema,
+  LedSettings,
+  LedSettingsSchema,
+  LedStatus,
+  LedStatusSchema,
 } from "./keyboard";
 import { VendorId, VendorIdSchema } from "./usb";
 
@@ -30,6 +34,8 @@ export type KeyboardProfile = {
   userKeyboardDeviceType?: KeyboardDeviceType | null | undefined;
   layout: KeyLayout;
   bindingsByLayer: KeyBinding[][];
+  ledStatus?: LedStatus | null | undefined;
+  ledSettings?: LedSettings | null | undefined;
 };
 
 export const KeyboardProfileSchema = z.object({
@@ -40,6 +46,8 @@ export const KeyboardProfileSchema = z.object({
   userKeyboardDeviceType: KeyboardDeviceTypeSchema.optional(),
   layout: KeyLayoutSchema,
   bindingsByLayer: z.array(z.array(KeyBindingSchema)),
+  ledStatus: LedStatusSchema.optional(),
+  ledSettings: LedSettingsSchema.optional(),
 }) satisfies z.ZodType<KeyboardProfile>;
 
 function parseKeyboardProfile(input: string): KeyboardProfile {

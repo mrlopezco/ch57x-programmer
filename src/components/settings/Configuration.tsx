@@ -12,6 +12,7 @@ import { Expando } from "@ux/Expando";
 import { H3, Text } from "@ux/Typography";
 
 import { Settings } from "../hooks/useSettings";
+import { LedControls, LedControlsProps } from "./LedControls";
 import { SelectDevice, SelectDeviceProps } from "./SelectDevice";
 import { SelectLayout, SelectLayoutProps } from "./SelectLayout";
 import { SetDeviceType } from "./SetDeviceType";
@@ -28,6 +29,12 @@ export type ConfigurationProps = {
   onChangeKeyboardDeviceType: (update: KeyboardDeviceType) => void;
   settings: Settings;
   onChangeSettings: (update: Settings) => void;
+  /** Show full LED controls (884x family). */
+  supportsLed: boolean;
+  ledControls?: Omit<LedControlsProps, "canSend" | "busy"> | undefined;
+  ledBusy?: boolean | undefined;
+  /** Product ID for LED availability messaging when controls are hidden. */
+  ledProductId?: number | undefined;
 } & SelectDeviceProps &
   SelectLayoutProps;
 
@@ -63,6 +70,10 @@ function OpenConfiguration({
   onBack,
   settings,
   onChangeSettings,
+  supportsLed,
+  ledControls,
+  ledBusy,
+  ledProductId,
 }: ConfigurationProps) {
   return (
     <div className="flex h-full flex-col gap-6 p-4">
@@ -109,6 +120,25 @@ function OpenConfiguration({
           onSelectLayout={onSelectLayout}
         />
 
+        {supportsLed && ledControls ? (
+          <LedControls
+            {...ledControls}
+            canSend={canReadWriteConfiguration}
+            busy={ledBusy ?? false}
+          />
+        ) : (
+          <div className="flex flex-col gap-1" aria-label="LED controls">
+            <Text strong>LEDs</Text>
+            <Text size="sm" className="text-secondary dark:text-neutral-300">
+              {ledProductId === 0x8890
+                ? "This 8890 keyboard model does not expose LED controls in this app."
+                : ledProductId !== undefined
+                  ? `LED controls are not available for product 0x${ledProductId.toString(16)}. Connect a 8840/8842 device, or use Add keyboard if it is already plugged in.`
+                  : "Connect the keyboard (sidebar → Add keyboard) to detect whether LED commands are supported."}
+            </Text>
+          </div>
+        )}
+
         <Button
           className="flex items-center gap-2"
           onClick={() => void onReadConfiguration?.()}
@@ -140,6 +170,7 @@ function OpenConfiguration({
           <Text>Save device</Text>
         </Button>
       </div>
+
       <SettingsEditor
         className="mt-auto"
         onChange={onChangeSettings}

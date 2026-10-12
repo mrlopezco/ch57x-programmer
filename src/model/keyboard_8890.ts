@@ -20,6 +20,7 @@ const K8890_CAPABILITIES: KeyboardCapabilities = {
   maxEncoders: 3,
   supportsKeyDelay: false,
   readConfiguration: false,
+  supportsLed: false,
 };
 
 export function makeKeyboard8890(): Keyboard {
@@ -102,7 +103,7 @@ export function makeKeyboard8890(): Keyboard {
       return messages;
     },
     setLed: () => {
-      throw new Error("Function not implemented.");
+      throw new Error("LED control is not supported on this keyboard model");
     },
     getDeviceType: () => {
       throw new Error("Reading configuration is not supported");

@@ -13,13 +13,87 @@ export type KeyboardCapabilities = {
   readonly maxEncoders: number;
   readonly supportsKeyDelay: boolean;
   readonly readConfiguration: boolean;
+  readonly supportsLed: boolean;
 };
+
+export const LED_COLORS = [
+  "Red",
+  "Orange",
+  "Yellow",
+  "Green",
+  "Cyan",
+  "Blue",
+  "Purple",
+] as const;
+
+export type LedColor = (typeof LED_COLORS)[number];
+
+export const LedColorSchema = z.union(
+  LED_COLORS.map(c => z.literal(c))
+) satisfies z.ZodType<LedColor>;
+
+export type LedBacklightColor = LedColor | "White";
+
+export const LedBacklightColorSchema = z.union([
+  LedColorSchema,
+  z.literal("White"),
+]) satisfies z.ZodType<LedBacklightColor>;
+
+export type LedMode =
+  | {
+      type: "Off";
+    }
+  | {
+      type: "Backlight";
+      color: LedBacklightColor;
+    }
+  | {
+      type: "Shock" | "Shock2" | "Press";
+      color: LedColor;
+    };
+
+export const LedModeSchema = z.union([
+  z.object({ type: z.literal("Off") }),
+  z.object({
+    type: z.literal("Backlight"),
+    color: LedBacklightColorSchema,
+  }),
+  z.object({
+    type: z.literal("Shock"),
+    color: LedColorSchema,
+  }),
+  z.object({
+    type: z.literal("Shock2"),
+    color: LedColorSchema,
+  }),
+  z.object({
+    type: z.literal("Press"),
+    color: LedColorSchema,
+  }),
+]) satisfies z.ZodType<LedMode>;
+
+export type LedSettings = {
+  layer: number;
+  mode: LedMode;
+};
+
+export const LedSettingsSchema = z.object({
+  layer: z.uint32(),
+  mode: LedModeSchema,
+}) satisfies z.ZodType<LedSettings>;
+
+export const LED_STATUSES = ["unknown", "confirmed", "none"] as const;
+export type LedStatus = (typeof LED_STATUSES)[number];
+
+export const LedStatusSchema = z.union(
+  LED_STATUSES.map(s => z.literal(s))
+) satisfies z.ZodType<LedStatus>;
 
 export type Keyboard = {
   readonly name: string;
   readonly capabilities: KeyboardCapabilities;
   bindKey: (layer: number, key: Key, expansion: Macro) => number[][];
-  setLed: (args: string[]) => number[][];
+  setLed: (settings: LedSettings) => number[][];
   getDeviceType: () => number[];
   readConfig: (layer: number) => number[];
   checkPacketType: (data: Uint8Array) => KeyboardPacketType | undefined;
@@ -36,6 +110,7 @@ export const NoopKeyboard: Keyboard = {
     maxEncoders: 2,
     supportsKeyDelay: false,
     readConfiguration: false,
+    supportsLed: false,
   },
   bindKey: () => [],
   setLed: () => [],

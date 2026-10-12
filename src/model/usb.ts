@@ -11,6 +11,15 @@ export const KNOWN_PRODUCT_IDS: Record<VendorId, number[]> = {
   0x1189: [0x8840, 0x8842, 0x8890],
 };
 
+/** 8840/8842 family — same check used when attaching the 884x driver. */
+export function is884xProductId(productId: number): boolean {
+  return productId !== 0 && (productId & 0x884f) === productId;
+}
+
+export function productSupportsLed(productId: number): boolean {
+  return is884xProductId(productId);
+}
+
 export async function scanForKeyboard(force: boolean = false) {
   if (navigator.hid === undefined) {
     console.error(

@@ -9,6 +9,11 @@ import {
   KeyboardCapabilities,
   KeyboardDeviceType,
   KeyChord,
+  LED_COLORS,
+  LedBacklightColor,
+  LedColor,
+  LedMode,
+  LedSettings,
   macroKind,
   macroKindFromValue,
   MEDIA_CODE,
@@ -24,32 +29,11 @@ import {
   unsignedByteToSigned,
 } from "./keyboard";
 
-const collator = new Intl.Collator("en-US", {
-  sensitivity: "base",
-  usage: "search",
-});
-
-const LED_COLORS = [
-  "Red",
-  "Orange",
-  "Yellow",
-  "Green",
-  "Cyan",
-  "Blue",
-  "Purple",
-] as const;
-
-export type LedColor = (typeof LED_COLORS)[number];
+export type { LedBacklightColor, LedColor, LedMode, LedSettings };
 
 function ledColorValue(ledColor: LedColor) {
   return LED_COLORS.indexOf(ledColor) + 1;
 }
-
-function parseLedColorValue(value: string): LedColor | undefined {
-  return LED_COLORS.find(color => collator.compare(color, value) === 0);
-}
-
-export type LedBacklightColor = LedColor | "White";
 
 function ledBacklightColorValue(ledBacklightColor: LedBacklightColor): number {
   if (ledBacklightColor === "White") {
@@ -57,28 +41,6 @@ function ledBacklightColorValue(ledBacklightColor: LedBacklightColor): number {
   }
   return ledColorValue(ledBacklightColor);
 }
-
-function parseLedBacklightColorValue(
-  value: string
-): LedBacklightColor | undefined {
-  if (collator.compare("White", value) === 0) {
-    return "White";
-  }
-  return parseLedColorValue(value);
-}
-
-type LedMode =
-  | {
-      type: "Off";
-    }
-  | {
-      type: "Backlight";
-      color: LedBacklightColor;
-    }
-  | {
-      type: "Shock" | "Shock2" | "Press";
-      color: LedColor;
-    };
 
 function ledModeCode(ledMode: LedMode): number {
   switch (ledMode.type) {
@@ -96,55 +58,6 @@ function ledModeCode(ledMode: LedMode): number {
     case "Press":
       return (ledColorValue(ledMode.color) << 4) | 4;
   }
-}
-
-function parseLedMode(value: string): LedMode | undefined {
-  const [mode, color] = value.split(" ");
-  if (mode && !color && collator.compare("Off", mode) === 0) {
-    return { type: "Off" };
-  } else if (mode && color) {
-    if (collator.compare("Backlight", mode) === 0) {
-      const parsedColor = parseLedBacklightColorValue(color);
-      if (parsedColor) {
-        return { type: "Backlight", color: parsedColor };
-      }
-    } else {
-      const parsedColor = parseLedColorValue(color);
-      if (parsedColor) {
-        if (collator.compare("Shock", mode)) {
-          return { type: "Shock", color: parsedColor };
-        }
-        if (collator.compare("Shock2", mode)) {
-          return { type: "Shock2", color: parsedColor };
-        }
-        if (collator.compare("Press", mode)) {
-          return { type: "Press", color: parsedColor };
-        }
-      }
-    }
-  }
-  return;
-}
-
-type LedArgs = {
-  layer: number;
-  mode: LedMode;
-};
-
-function parseLedArgs(value: string): LedArgs | undefined {
-  const [rawLayer, rawLedMode] = value.split(" ", 2);
-  if (rawLayer === undefined || rawLedMode === undefined) {
-    return;
-  }
-  const layer = Number(rawLayer);
-  if (!Number.isInteger(layer) || layer < 0) {
-    return undefined;
-  }
-  const mode = parseLedMode(rawLedMode);
-  if (mode === undefined) {
-    return;
-  }
-  return { layer, mode };
 }
 
 const MAX_NUMBER_OF_BUTTONS = 15;
@@ -166,6 +79,7 @@ const K884X_CAPABILITIES: KeyboardCapabilities = {
   maxEncoders: 3,
   supportsKeyDelay: true,
   readConfiguration: true,
+  supportsLed: true,
 };
 
 export function makeKeyboard884x(): Keyboard {
@@ -338,26 +252,22 @@ export function makeKeyboard884x(): Keyboard {
 
       return messages;
     },
-    setLed: args => {
-      const ledArgs = parseLedArgs(args.join(" "));
-      if (ledArgs === undefined) {
-        throw new Error("Unable to parse led arguments");
-      }
-      if (ledArgs.layer > 2) {
+    setLed: (settings: LedSettings) => {
+      if (settings.layer > 2) {
         throw new Error("Invalid layer, must be 0-2");
       }
 
-      const code = ledModeCode(ledArgs.mode);
+      const code = ledModeCode(settings.mode);
 
       return [
         // prettier-ignore
         [
-          0x03, 0xfe, 0xb0, ledArgs.layer + 1,
+          0xfe, 0xb0, settings.layer + 1,
           0x08, 0x00, 0x00, 0x00,
           0x00, 0x00, 0x01, 0x00,
           code,
         ],
-        [0x03, 0xfd, 0xf0, 0xff],
+        [0xfd, 0xf0, 0xff],
       ];
     },
     getDeviceType: () => READ_DEVICE_TYPE_BUFFER,
